@@ -1,0 +1,214 @@
+#WPEによるコード
+
+import numpy as np
+import scipy.signal as sp
+import scipy.io.wavfile as wavfile
+
+# =====================================
+# 設定
+# =====================================
+
+# 入力ファイル
+input_file = "MYFILE.wav"
+
+# 出力ファイル
+output_file = "MYFILE_WPE.wav"
+
+# フレームサイズ
+N = 1024
+
+# フレームシフト
+Nshift = int(N / 4)
+
+# WPEの反復回数
+n_wpe_iterations = 20
+
+# 残響除去のパラメータ
+D = 2
+Lh = 5
+
+
+# =====================================
+# 過去のマイク入力信号を作成
+# =====================================
+
+def make_x_bar(x, D, Lh):
+
+    Lt = np.shape(x)[2]
+
+    x_bar = np.zeros(
+        shape=(Lh,) + np.shape(x),
+        dtype=np.complex128
+    )
+
+    for tau in range(Lh):
+        x_bar[tau, ..., tau+D:] = x[:, :, :-(tau+D)]
+
+    return x_bar
+
+
+# =====================================
+# WPEによる残響除去
+# =====================================
+
+def dereverberation_wpe(x, D, Lh, n_iterations):
+
+    M = np.shape(x)[0]
+    Nk = np.shape(x)[1]
+    Lt = np.shape(x)[2]
+
+    # 過去のマイク入力信号
+    x_bar = make_x_bar(x, D, Lh)
+
+    # 配列を変形
+    x_bar = np.reshape(x_bar, [Lh*M, Nk, Lt])
+
+    # 初期の音声パワー
+    power = np.mean(np.abs(x)**2, axis=0)
+
+    # 数値計算用の微小値
+    eps = 1e-10
+
+    # WPEの反復計算
+    for iteration in range(n_iterations):
+
+        # パワーの逆数
+        inverse_power = 1.0 / np.maximum(power, eps)
+
+        # 共分散行列
+        covariance = np.einsum(
+            'ikt,jkt,kt->kij',
+            x_bar,
+            np.conjugate(x_bar),
+            inverse_power
+        )
+
+        # 相互相関
+        correlation = np.einsum(
+            'ikt,kt,kt->ki',
+            x_bar,
+            np.conjugate(x[0,...]),
+            inverse_power
+        )
+
+        # フィルタの計算
+        filter = np.zeros(
+            (Nk, Lh*M),
+            dtype=np.complex128
+        )
+
+        for k in range(Nk):
+
+            # 正則化
+            reg = 1e-6 * (
+                np.trace(covariance[k]).real / (Lh*M)
+            ) + eps
+
+            filter[k] = np.linalg.solve(
+                covariance[k] + reg*np.eye(Lh*M),
+                correlation[k]
+            )
+
+        # 残響成分の推定
+        x_reverb = np.einsum(
+            'ki,ikt->kt',
+            np.conjugate(filter),
+            x_bar
+        )
+
+        # 残響除去
+        x_dereverb = x[0,...] - x_reverb
+
+        # 音声パワーの更新
+        power = np.maximum(
+            np.abs(x_dereverb)**2,
+            eps
+        )
+
+        print("WPE iteration:", iteration+1)
+
+    return x_dereverb
+
+
+# =====================================
+# 音声ファイル読み込み
+# =====================================
+
+sample_rate, data = wavfile.read(input_file)
+
+# ステレオの場合はモノラルに変換
+if data.ndim == 2:
+    data = data.astype(np.float64).mean(axis=1)
+
+# 整数形式の音声を正規化
+if np.issubdtype(data.dtype, np.integer):
+    data = data.astype(np.float64) / np.iinfo(data.dtype).max
+else:
+    data = data.astype(np.float64)
+
+# =====================================
+# STFT
+# =====================================
+
+f, t, stft_data = sp.stft(
+    data,
+    fs=sample_rate,
+    window="hann",
+    nperseg=N,
+    noverlap=N-Nshift
+)
+
+# マイクロホン数の次元を追加
+stft_data = stft_data[np.newaxis, :, :]
+
+# =====================================
+# WPEによる残響除去
+# =====================================
+
+x_dereverb_wpe = dereverberation_wpe(
+    stft_data,
+    D,
+    Lh,
+    n_wpe_iterations
+)
+
+# =====================================
+# ISTFT
+# =====================================
+
+t, output_data = sp.istft(
+    x_dereverb_wpe,
+    fs=sample_rate,
+    window="hann",
+    nperseg=N,
+    noverlap=N-Nshift
+)
+
+# 入力音声と長さを合わせる
+output_data = output_data[:len(data)]
+
+# =====================================
+# WAVファイル保存
+# =====================================
+
+# 16bitに変換
+output_data = np.clip(
+    output_data,
+    -1.0,
+    1.0
+)
+
+output_data = (
+    output_data * 32767
+).astype(np.int16)
+
+wavfile.write(
+    output_file,
+    sample_rate,
+    output_data
+)
+
+print("--------------------------------")
+print("WPEによる残響除去が完了しました")
+print("出力ファイル:", output_file)
+print("--------------------------------")
