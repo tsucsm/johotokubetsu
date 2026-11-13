@@ -1,0 +1,177 @@
+# 最小二乗法のコード
+
+import wave
+import numpy as np
+import scipy.signal as sp
+import scipy.io.wavfile as wavfile
+
+# =====================================
+# 設定
+# =====================================
+
+# 入力ファイル名
+input_file = "MYFILE.wav"
+
+# 出力ファイル名
+output_file = "MYFILE_min2.wav"
+
+# フレームサイズ
+N = 1024
+
+# フレームシフト
+Nshift = int(N / 4)
+
+# 周波数の数
+Nk = int(N / 2 + 1)
+
+# 残響除去のパラメータ
+D = 2
+Lh = 5
+
+
+# =====================================
+# 過去のマイク入力信号を作成
+# =====================================
+
+def make_x_bar(x, D, Lh):
+
+    Lt = np.shape(x)[2]
+
+    x_bar = np.zeros(
+        shape=(Lh,) + np.shape(x),
+        dtype=np.complex128
+    )
+
+    for tau in range(Lh):
+        x_bar[tau, ..., tau + D:] = x[:, :, :-(tau + D)]
+
+    return x_bar
+
+
+# =====================================
+# 最小二乗法による残響除去
+# =====================================
+
+def dereverberation_ls(x, x_bar):
+
+    M = np.shape(x)[0]
+    Nk = np.shape(x)[1]
+    Lt = np.shape(x)[2]
+    Lh = np.shape(x_bar)[0]
+
+    x_bar = np.reshape(x_bar, [Lh * M, Nk, Lt])
+
+    x_bar_x_bar_h = np.einsum(
+        'ikt,jkt->kij',
+        x_bar,
+        np.conjugate(x_bar)
+    )
+
+    correlation = np.einsum(
+        'ikt,kt->ki',
+        x_bar,
+        np.conjugate(x[0, ...])
+    )
+
+    # 数値的な不安定さを軽減するため微小値を加える
+    filter = np.zeros(
+        (Nk, Lh * M),
+        dtype=np.complex128
+    )
+
+    for k in range(Nk):
+        filter[k] = np.linalg.solve(
+            x_bar_x_bar_h[k] + 1e-8 * np.eye(Lh * M),
+            correlation[k]
+        )
+
+    x_reverb = np.einsum(
+        'kj,jkt->kt',
+        np.conjugate(filter),
+        x_bar
+    )
+
+    x_dereverb = x[0, ...] - x_reverb
+
+    return x_dereverb
+
+
+# =====================================
+# 音声ファイル読み込み
+# =====================================
+
+sample_rate, data = wavfile.read(input_file)
+
+# ステレオの場合はモノラルに変換
+if data.ndim == 2:
+    data = data.astype(np.float64).mean(axis=1)
+
+# 正規化
+data = data.astype(np.float64)
+
+if np.issubdtype(data.dtype, np.integer):
+    pass
+
+# 整数形式の音声を正規化
+original_data = data.copy()
+
+if np.max(np.abs(data)) > 1:
+    data = data / 32768.0
+
+# =====================================
+# STFT
+# =====================================
+
+f, t, stft_data = sp.stft(
+    data,
+    fs=sample_rate,
+    window="hann",
+    nperseg=N,
+    noverlap=N-Nshift
+)
+
+# 1チャンネルの形状にする
+stft_data = stft_data[np.newaxis, :, :]
+
+# =====================================
+# 残響除去
+# =====================================
+
+x_bar = make_x_bar(stft_data, D, Lh)
+
+x_dereverb = dereverberation_ls(stft_data, x_bar)
+
+# =====================================
+# ISTFT
+# =====================================
+
+t, output_data = sp.istft(
+    x_dereverb,
+    fs=sample_rate,
+    window="hann",
+    nperseg=N,
+    noverlap=N-Nshift
+)
+
+# =====================================
+# WAV保存
+# =====================================
+
+# 出力の長さを入力と合わせる
+output_data = output_data[:len(data)]
+
+# 音量を調整して16bitに変換
+output_data = output_data / (
+    np.max(np.abs(output_data)) + 1e-10
+)
+
+output_data = (output_data * 32767).astype(np.int16)
+
+wavfile.write(
+    output_file,
+    sample_rate,
+    output_data
+)
+
+print("残響除去が完了しました")
+print("出力ファイル:", output_file)
