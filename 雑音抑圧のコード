@@ -1,4 +1,84 @@
+import numpy as np
+import soundfile as sf
+import noisereduce as nr
+import scipy.signal as signal
+import matplotlib.pyplot as plt
 
+# =========================
+# ファイル設定
+# =========================
+input_file = "su01_original.wav"
+output_file = "su01_processed.wav"
+image_file = "su01_processed_waveform.png"
+
+# =========================
+# 音声読み込み
+# =========================
+data, sr = sf.read(input_file)
+
+# ステレオをモノラルに変換
+if data.ndim == 2:
+    data = data.mean(axis=1)
+
+# =========================
+# 雑音抑圧
+# =========================
+reduced = nr.reduce_noise(
+    y=data,
+    sr=sr,
+    prop_decrease=0.35,
+    stationary=False
+)
+
+# =========================
+# ハイパスフィルタ
+# =========================
+sos = signal.butter(
+    3, 100, btype="highpass",
+    fs=sr, output="sos"
+)
+
+processed = signal.sosfiltfilt(sos, reduced)
+
+# =========================
+# 音量の正規化
+# =========================
+peak = np.max(np.abs(processed))
+
+if peak > 0:
+    processed = processed / peak * 0.95
+
+# =========================
+# WAV保存
+# =========================
+sf.write(output_file, processed, sr)
+
+print("雑音抑圧完了:", output_file)
+
+# =========================
+# 波形表示
+# =========================
+time = np.arange(len(data)) / sr
+
+plt.figure(figsize=(14, 6))
+
+plt.subplot(2, 1, 1)
+plt.plot(time, data)
+plt.title("Original Audio")
+plt.xlabel("Time [s]")
+plt.ylabel("Amplitude")
+plt.grid()
+
+plt.subplot(2, 1, 2)
+plt.plot(time, processed)
+plt.title("Noise Reduced Audio")
+plt.xlabel("Time [s]")
+plt.ylabel("Amplitude")
+plt.grid()
+
+plt.tight_layout()
+plt.savefig(image_file)
+plt.show()
 
 
 
